@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>DNA-Nanotube Simulator – Aptamer-Length Study</title>
+<style>
+    html,body{margin:0;height:100%;background:#111;color:#eee;font-family:Arial,Helvetica,sans-serif}
+    #container{display:flex;height:100%}
+    #canvas3d{flex:1;background:#000}
+    #panel{width:300px;background:#222;padding:15px;overflow-y:auto}
+    h2{margin:0 0 10px;font-size:1.2em;color:#0f8}
+    label{display:block;margin:8px 0;font-size:.9em}
+    input[type=range]{width:100%}
+    button{margin:5px 0;width:100%;padding:8px;border:none;background:#0f8;color:#000;font-weight:bold;cursor:pointer}
+    button:hover{background:#0fa}
+    #legend{margin-top:20px;font-size:.85em}
+    .legend-item{display:flex;align-items:center;margin:3px 0}
+    .color-box{width:12px;height:12px;margin-right:8px;border-radius:2px}
+    #stats{margin-top:15px;font-size:.85em;line-height:1.4}
+</style>
+</head>
+<body>
+<div id="container">
+    <canvas id="canvas3d"></canvas>
+
+    <div id="panel">
+        <h2>Control Panel</h2>
+
+        <label>Aptamer length (bp):
+            <input id="aptLen" type="range" min="10" max="50" value="20">
+            <span id="aptLenVal">20</span>
+        </label>
+
+        <label>Nanotube turns:
+            <input id="turns" type="range" min="5" max="20" value="10">
+            <span id="turnsVal">10</span>
+        </label>
+
+        <label>ROS release rate (per&nbsp;s):
+            <input id="rosRate" type="range" min="0.2" max="5" step="0.2" value="1">
+            <span id="rosRateVal">1.0</span>
+        </label>
+
+        <button id="btnStart">Start simulation</button>
+        <button id="btnPause">Pause</button>
+        <button id="btnReset">Reset</button>
+        <button id="btnSave">Export PNG</button>
+
+        <div id="legend">
+            <strong>Legend</strong>
+            <div class="legend-item"><div class="color-box" style="background:#0f8"></div> DNA helix</div>
+            <div class="legend-item"><div class="color-box" style="background:#f08"></div> G4 site</div>
+            <div class="legend-item"><div class="color-box" style="background:#fa0"></div> Aptamer</div>
+            <div class="legend-item"><div class="color-box" style="background:#f00"></div> ROS</div>
+        </div>
+
+        <div id="stats">
+            <strong>Live data</strong>
+            <div>Membrane efficiency: <span id="eff">0 %</span></div>
+            <div>ROS concentration: <span id="rosConc">0 µM</span></div>
+            <div>Active G4 sites: <span id="g4Active">0 / 0</span></div>
+        </div>
+    </div>
+</div>
+
+<!-- Three.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
+<script>
+/* ----------------------------------------------------------
+   1.  Global variables
+---------------------------------------------------------- */
+let scene, camera, renderer, nanotube, g4List=[], rosList=[];
+let running=false, timer=null;
+
+/* ----------------------------------------------------------
+   2.  Three.js setup
+---------------------------------------------------------- */
+function initScene(){
+    const canvas=document.getElementById('canvas3d');
+
+    scene=new THREE.Scene();
+    scene.background=new THREE.Color(0x000000);
+
+    camera=new THREE.PerspectiveCamera(60, canvas.clientWidth/canvas.clientHeight, 0.1, 100);
+    camera.position.set(0,8,18);
+    camera.lookAt(0,0,0);
+
+    renderer=new THREE.WebGLRenderer({canvas, antialias:true});
+    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    renderer.shadowMap.enabled=true;
+
+    // lights
+    scene.add(new THREE.AmbientLight(0x404040));
+    const dir=new THREE.DirectionalLight(0xffffff,0.8);
+    dir.position.set(5,10,5); dir.castShadow=true;
+    scene.add(dir);
+
+    // membrane plane
+    const memGeo=new THREE.CylinderGeometry(8,8,0.1,64);
+    const memMat=new THREE.MeshPhongMaterial({color:0x0088ff, transparent:true, opacity:0.25});
+    const membrane=new THREE.Mesh(memGeo,memMat);
+    membrane.rotation.x=Math.PI/2;
+    membrane.position.y=-3;
+    scene.add(membrane);
+
+    buildNanotube();
+    animate();
+}
+function animate(){
+    requestAnimationFrame(animate);
+    if(nanotube){nanotube.rotation.y+=0.005;}
+    renderer.render(scene,camera);
+}
+
+/* ----------------------------------------------------------
+   3.  Build nanotube with aptamers & G4 sites
+---------------------------------------------------------- */
+function buildNanotube(){
+    nanotube=new THREE.Group();
+    const turns=parseInt(document.getElementById('turns').value);
+    const aptLen=parseInt(document.getElementById('aptLen').value);
+
+    for(let t=0;t<turns;t++){
+        const ring=new THREE.Group();
+        ring.position.y=t*1.2;
+
+        // DNA helix (simple two ribbons)
+        const helixMat=new THREE.MeshPhongMaterial({color:0x00ff88});
+        for(let s=0;s<2;s++){
+            const pts=[];
+            for(let a=0;a<=64;a++){
+                const ang=a/64*Math.PI*2;
+                const x=Math.cos(ang+s*Math.PI)*2;
+                const z=Math.sin(ang+s*Math.PI)*2;
+                const y=Math.sin(ang*8)*0.15;
+                pts.push(new THREE.Vector3(x,y,z));
+            }
+            const geo=new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),64,0.08,8,false);
+            const mesh=new THREE.Mesh(geo,helixMat);
+            ring.add(mesh);
+        }
+
+        // 10 G4 sites per turn (pointing outward)
+        for(let g=0;g<10;g++){
+            const ang=g/10*Math.PI*2;
+            const g4=new THREE.Mesh(
+                new THREE.BoxGeometry(0.3,0.3,0.3),
+                new THREE.MeshPhongMaterial({color:0xff0066})
+            );
+            g4.position.set(Math.cos(ang)*2.5,0,Math.sin(ang)*2.5);
+            g4.userData={active:false};
+            g4List.push(g4);
+            ring.add(g4);
+
+            // attached aptamer
+            const apt=new THREE.Mesh(
+                new THREE.CylinderGeometry(0.05,0.05,aptLen/10,6),
+                new THREE.MeshPhongMaterial({color:0xffaa00})
+            );
+            apt.position.set(Math.cos(ang)*2.7,0,Math.sin(ang)*2.7);
+            apt.lookAt(new THREE.Vector3(0,0,0));
+            ring.add(apt);
+        }
+        nanotube.add(ring);
+    }
+    scene.add(nanotube);
+}
+
+/* ----------------------------------------------------------
+   4.  ROS release animation
+---------------------------------------------------------- */
+function releaseROS(){
+    if(!running) return;
+    const rate=parseFloat(document.getElementById('rosRate').value);
+    g4List.forEach(g4=>{
+        if(Math.random()<0.3){
+            g4.userData.active=true;
+            g4.material.color.set(0xff0000);
+
+            const ros=new THREE.Mesh(
+                new THREE.SphereGeometry(0.08,4,4),
+                new THREE.MeshBasicMaterial({color:0xff0000})
+            );
+            ros.position.copy(g4.position);
+            ros.position.y-=0.2;
+            scene.add(ros);
+            rosList.push(ros);
+
+            // animate downward
+            const speed=0.05+Math.random()*0.05;
+            ros.userData={dy:-speed};
+        }
+    });
+    updateStats();
+    timer=setTimeout(()=>releaseROS(),1000/rate);
+}
+function updateStats(){
+    const active=g4List.filter(g=>g.userData.active).length;
+    const eff=Math.min((active/g4List.length)*100,100).toFixed(1);
+    document.getElementById('eff').textContent=eff+' %';
+    document.getElementById('rosConc').textContent=(active*0.5).toFixed(1)+' µM';
+    document.getElementById('g4Active').textContent=`${active} / ${g4List.length}`;
+}
+
+/* ----------------------------------------------------------
+   5.  Simulation controls
+---------------------------------------------------------- */
+document.getElementById('btnStart').addEventListener('click',()=>{
+    if(running) return;
+    running=true;
+    releaseROS();
+});
+document.getElementById('btnPause').addEventListener('click',()=>{
+    running=false;
+    clearTimeout(timer);
+});
+document.getElementById('btnReset').addEventListener('click',()=>{
+    running=false; clearTimeout(timer);
+    g4List.forEach(g=>{g.userData.active=false; g.material.color.set(0xff0066);});
+    rosList.forEach(r=>scene.remove(r)); rosList.length=0;
+    scene.remove(nanotube);
+    buildNanotube();
+    updateStats();
+});
+document.getElementById('btnSave').addEventListener('click',()=>{
+    renderer.render(scene,camera);
+    const link=document.createElement('a');
+    link.download='nanotube_snap.png';
+    link.href=renderer.domElement.toDataURL('image/png');
+    link.click();
+});
+
+/* sliders update labels */
+['aptLen','turns','rosRate'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.addEventListener('input',e=>{
+        document.getElementById(id+'Val').textContent=e.target.value;
+    });
+    // also trigger reset when parameters change
+    el.addEventListener('change',()=>document.getElementById('btnReset').click());
+});
+
+/* ----------------------------------------------------------
+   6.  Window resize
+---------------------------------------------------------- */
+window.addEventListener('resize',()=>{
+    const canvas=document.getElementById('canvas3d');
+    camera.aspect=canvas.clientWidth/canvas.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(canvas.clientWidth,canvas.clientHeight);
+});
+
+/* ----------------------------------------------------------
+   7.  Kick-off
+---------------------------------------------------------- */
+initScene();
+</script>
+</body>
+</html>
